@@ -1,6 +1,10 @@
 """Port scanning: rustscan + nmap."""
 
+import http.client
 import os
+import socket
+import ssl
+import urllib.parse
 import xml.etree.ElementTree as ET
 
 from .utils import (
@@ -97,6 +101,114 @@ def save_result(result: Result, path: str) -> str | None:
     with open(path, "w", encoding="utf-8", errors="replace") as f:
         f.write(result.stdout)
     return path
+
+
+def probe_http_redirect(target: str, port: int, scheme: str = "http") -> str | None:
+    """Quick HTTP probe to check for redirect Location header. Returns hostname if found."""
+    try:
+        if scheme == "https":
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            conn = http.client.HTTPSConnection(target, port, timeout=10, context=ctx)
+        else:
+            conn = http.client.HTTPConnection(target, port, timeout=10)
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        # Read body to allow next request, but we only care about headers
+        try:
+            resp.read(8192)
+        except Exception:
+            pass
+        conn.close()
+        if resp.status in (301, 302, 307, 308):
+            location = resp.getheader("Location", "")
+            if location:
+                parsed = urllib.parse.urlparse(location)
+                if parsed.hostname and parsed.hostname != target:
+                    return parsed.hostname
+    except Exception:
+        pass
+    return None
+
+
+def probe_http_redirects(target: str, http_ports: list[int]) -> dict[str, set[str]]:
+    """Probe all HTTP ports for redirect domains.
+
+    Returns {domain: {source_hostnames}} mapping.
+    """
+    found: dict[str, set[str]] = {}
+    for port in http_ports:
+        for scheme in ["http", "https"]:
+            hostname = probe_http_redirect(target, port, scheme)
+            if hostname:
+                # Extract root domain from hostname
+                parts = hostname.split(".")
+                if len(parts) >= 2:
+                    domain = ".".join(parts[-2:])  # e.g. helix.htb
+                else:
+                    domain = hostname
+                found.setdefault(domain, set()).add(hostname)
+                break  # Got result on first scheme attempt
+    return found
+
+
+def get_hosts_entries(
+    target: str,
+    services: dict[int, dict],
+    extra_hostnames: set[str] | None = None,
+) -> list[tuple[str, str]]:
+    """Collect hostnames from nmap that may need /etc/hosts entries.
+
+    Returns list of (hostname, reason) tuples.
+    """
+    hostnames: set[str] = set()
+    for info in services.values():
+        hn = info.get("hostname", "").strip()
+        if hn and hn != target and hn != "localhost":
+            hostnames.add(hn)
+    if extra_hostnames:
+        hostnames.update(extra_hostnames)
+
+    if not hostnames:
+        return []
+
+    entries: list[tuple[str, str]] = []
+    for hn in sorted(hostnames):
+        try:
+            resolved = socket.getaddrinfo(hn, None)
+            ips = {addr[4][0] for addr in resolved}
+            if target not in ips:
+                entries.append((hn, f"resolves to {', '.join(sorted(ips))}, not {target}"))
+            # If target is in ips, hostname already resolves correctly — skip
+        except socket.gaierror:
+            entries.append((hn, "no DNS record"))
+
+    return entries
+
+
+def save_hosts_entries(target: str, entries: list[tuple[str, str]], out_dir: str) -> str | None:
+    """Save suggested hosts entries to file. Returns path or None."""
+    if not entries:
+        return None
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "hosts_entries.txt")
+    lines = [
+        f"# Suggested /etc/hosts entries for {target}",
+        f"# {_hosts_path()}",
+        "",
+    ]
+    for hostname, reason in entries:
+        lines.append(f"{target}\t{hostname}\t# {reason}")
+    with open(path, "w", encoding="utf-8", errors="replace") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
+
+
+def _hosts_path() -> str:
+    if os.name == "nt":
+        return r"C:\Windows\System32\drivers\etc\hosts"
+    return "/etc/hosts"
 
 
 def identify_services(services: dict[int, dict]) -> dict[str, list[int]]:

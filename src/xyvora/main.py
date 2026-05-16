@@ -10,7 +10,7 @@ from .modules.http import run_http
 from .modules.smb import run_smb
 from .modules.ssh import run_ssh
 from .reporter import generate
-from .scanner import deep_scan, identify_services, scan_ports
+from .scanner import _hosts_path, deep_scan, get_hosts_entries, identify_services, probe_http_redirects, save_hosts_entries, scan_ports
 from .utils import Result
 
 
@@ -52,11 +52,12 @@ def run(
     ssh_ports = classified.get("ssh", [])
     ad_detected = bool(classified.get("ad")) or bool(services.get(88)) or bool(services.get(389))
 
+    if services.get(443):
+        http_ports = list(set(http_ports + [443]))
+
     service_labels = []
     if http_ports:
         service_labels.append(f"HTTP({','.join(map(str, http_ports))})")
-    if services.get(443):
-        http_ports = list(set(http_ports + [443]))
     if ssh_ports:
         service_labels.append(f"SSH({','.join(map(str, ssh_ports))})")
     if smb_ports:
@@ -68,13 +69,37 @@ def run(
 
     print(f"[+] Identified: {'  '.join(service_labels)}")
 
+    # ---- Phase 2.5: Domain discovery + hosts entries ----
+    http_hostnames: set[str] = set()
+    if not dry_run and http_ports:
+        redirect_domains = probe_http_redirects(target, http_ports)
+        if redirect_domains:
+            for domain_name, hostname_set in redirect_domains.items():
+                http_hostnames.update(hostname_set)
+                if not domain:
+                    domain = domain_name
+                    print(f"[+] Auto-detected domain: {domain}")
+                    if hostname_set:
+                        print(f"    hostnames: {', '.join(sorted(hostname_set))}")
+
+    # Collect hosts entries from nmap + HTTP redirects
+    hosts_entries = get_hosts_entries(target, services, http_hostnames if http_hostnames else None)
+    if hosts_entries:
+        print(f"\n[!] Found {len(hosts_entries)} hostname(s) that may need hosts file entries:")
+        hosts_path = _hosts_path()
+        for hostname, reason in hosts_entries:
+            print(f"    {target}\t{hostname}\t# {reason}")
+        print(f"    → saved to results/{target}/scan/hosts_entries.txt")
+        print(f"    → add to {hosts_path} with: sudo nano {hosts_path}")
+        save_hosts_entries(target, hosts_entries, os.path.join(out_dir, "scan"))
+
     if dry_run:
         print("")
 
     # ---- Phase 3: Concurrent enumeration ----
     task_count = 0
     if http_ports:
-        task_count += len(http_ports) * 3  # gobuster, nikto, whatweb
+        task_count += len(http_ports) * 4  # gobuster, nikto, whatweb, ffuf-vhost
     if smb_ports:
         task_count += 2  # enum4linux, smbclient
     if ftp_ports:
@@ -107,7 +132,7 @@ def run(
         module_futures = {}
         labels = {}
         if http_ports:
-            f = executor.submit(run_http, target, http_ports, dry_run, out_dir, progress_callback)
+            f = executor.submit(run_http, target, http_ports, dry_run, out_dir, domain, progress_callback)
             module_futures[f] = "web"
         if smb_ports:
             f = executor.submit(run_smb, target, smb_ports, username, password, dry_run, out_dir, progress_callback)

@@ -8,6 +8,7 @@ import time
 # Default configs
 DIRBUSTER_MEDIUM = "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
 KERBRUTE_USERLIST = "/usr/share/seclists/Usernames/xato-net-10-million-usernames.txt"
+FFUF_VHOST_WORDLIST = "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
 GOBUSTER_TIMEOUT = 600   # 10 minutes
 DEFAULT_TIMEOUT = 300    # 5 minutes
 
