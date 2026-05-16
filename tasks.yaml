@@ -1,0 +1,146 @@
+# xyvora Task Plan — Agent-executable task decomposition
+# Generated: 2026-05-16
+
+tasks:
+  - id: T001
+    title: Implement shared utilities (Result, run_cmd, save_result)
+    depends_on: []
+    input: Requirements Document §Key Defaults
+    output: src/xyvora/utils.py with unit tests
+    acceptance_criteria:
+      - Result.has_output returns True only when stdout is non-empty
+      - run_cmd captures stdout/stderr and handles timeout
+      - run_cmd handles FileNotFoundError gracefully
+      - save_result returns None for empty results
+      - cmd_to_str correctly shell-quotes arguments
+
+  - id: T002
+    title: Implement port scanner (rustscan + nmap + service classification)
+    depends_on: [T001]
+    input: Requirements Document §Execute Flow ①②③
+    output: src/xyvora/scanner.py with unit tests
+    acceptance_criteria:
+      - scan_ports runs rustscan on all 65535 ports, returns open port list
+      - deep_scan runs nmap -sC -sV, saves XML, returns service dict
+      - parse_nmap_xml extracts service name, product, version, hostname
+      - identify_services classifies ports into http/smb/ftp/ssh/ad
+      - AD detection triggered by ports 88, 389, 636 or kerberos/ldap service names
+
+  - id: T003
+    title: Implement HTTP enumeration module
+    depends_on: [T001]
+    input: Requirements Document §HTTP/HTTPS enumeration
+    output: src/xyvora/modules/http.py
+    acceptance_criteria:
+      - Runs gobuster, nikto, whatweb concurrently for each web port
+      - gobuster timeout 10 min, others 5 min
+      - Uses dirbuster medium wordlist
+      - Dry-run mode prints commands without executing
+
+  - id: T004
+    title: Implement SMB enumeration module
+    depends_on: [T001]
+    input: Requirements Document §SMB enumeration
+    output: src/xyvora/modules/smb.py
+    acceptance_criteria:
+      - Runs enum4linux -a and smbclient -L concurrently
+      - smbclient supports optional credentials (-U user%pass)
+      - Empty results not saved
+
+  - id: T005
+    title: Implement FTP anonymous login detection
+    depends_on: [T001]
+    input: Requirements Document §FTP enumeration
+    output: src/xyvora/modules/ftp.py
+    acceptance_criteria:
+      - Attempts anonymous login on each FTP port
+      - Lists directory contents on success
+      - Uses ftplib (stdlib) with subprocess fallback
+
+  - id: T006
+    title: Implement SSH audit module
+    depends_on: [T001]
+    input: Requirements Document §SSH enumeration
+    output: src/xyvora/modules/ssh.py
+    acceptance_criteria:
+      - Runs ssh-audit on each SSH port
+      - 5-minute timeout per target
+
+  - id: T007
+    title: Implement AD enumeration module (domain extraction)
+    depends_on: [T001, T002]
+    input: Requirements Document §AD enumeration, domain extraction
+    output: Domain extraction logic in src/xyvora/modules/ad.py
+    acceptance_criteria:
+      - LDAP anonymous bind extracts defaultNamingContext → domain
+      - Falls back to nmap hostname parsing (dc01.htb.local → htb.local)
+      - Returns None when both fail, prompting manual --domain input
+
+  - id: T008
+    title: Implement AD unauthenticated enumeration
+    depends_on: [T007]
+    input: Requirements Document §AD [no credentials]
+    output: Unauthenticated AD modules
+    acceptance_criteria:
+      - ldapsearch anonymous with domain base DN
+      - kerbrute userenum with xato-net-10-million-usernames.txt
+      - GetNPUsers AS-REP roasting (no credentials)
+      - crackmapexec smb anonymous
+      - rpcclient anonymous enumdomusers
+
+  - id: T009
+    title: Implement AD authenticated enumeration
+    depends_on: [T007]
+    input: Requirements Document §AD [with credentials (-u/-p)]
+    output: Authenticated AD modules
+    acceptance_criteria:
+      - ldapsearch with user principal authentication
+      - crackmapexec smb with domain credentials
+      - GetUserSPNs Kerberoasting with credentials
+      - Modules only run when -u and -p are provided
+
+  - id: T010
+    title: Implement report generator
+    depends_on: [T001]
+    input: Requirements Document §Output Structure, report.md
+    output: src/xyvora/reporter.py with unit tests
+    acceptance_criteria:
+      - Generates report.md in results/<ip>/
+      - Includes service summary table
+      - Only includes modules with actual output
+      - Adds "No results" section when all modules are empty
+      - Truncates very long outputs (>5000 chars)
+
+  - id: T011
+    title: Implement main orchestrator with progress display
+    depends_on: [T002, T003, T004, T005, T006, T007, T008, T009, T010]
+    input: Requirements Document §Terminal Progress Display
+    output: src/xyvora/main.py
+    acceptance_criteria:
+      - Orchestrates Phase 1→2→3→4 in correct order
+      - Shows progress for each running task
+      - Displays elapsed time per task
+      - Concurrent execution of all module categories
+      - Handles --dry-run mode
+      - Returns appropriate exit codes (0=success, 1=no ports, 2=no services)
+
+  - id: T012
+    title: CLI entry point with argparse
+    depends_on: [T011]
+    input: Requirements Document §Usage
+    output: xyvora.py (root)
+    acceptance_criteria:
+      - Parses target IP (required)
+      - Optional: -u/--username, -p/--password, --domain, --dry-run
+      - Help text describes all options
+
+  - id: T013
+    title: CI/CD pipeline
+    depends_on: [T012]
+    input: agent-harness-prompts Stage 03
+    output: .github/workflows/ci.yml
+    acceptance_criteria:
+      - lint job: ruff, black, isort
+      - test job: pytest with coverage
+      - security-scan job: bandit
+      - PR triggers lint+test, main triggers full pipeline

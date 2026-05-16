@@ -1,0 +1,116 @@
+## 📋 最终需求文档 v4（定稿）
+
+### 使用方式
+```bash
+# 基础用法
+python3 pentool.py 10.10.10.1
+
+# 拿到凭据后补跑认证枚举
+python3 pentool.py 10.10.10.1 -u administrator -p Password123
+
+# 只看命令不执行
+python3 pentool.py 10.10.10.1 --dry-run
+
+# 手动指定域名
+python3 pentool.py 10.10.10.1 --domain htb.local
+```
+
+---
+
+### 执行流程
+
+```
+① rustscan 全端口扫描 (0-65535)
+        ↓
+② nmap -sC -sV 深度探测 → 保存 nmap.xml
+        ↓
+③ 识别服务，只对存在的服务启动对应模块，并发执行
+
+   HTTP/HTTPS（有才跑）       AD（检测到 88/389/636 才跑）
+   ├── gobuster               ├── 域名提取
+   ├── nikto                  │   ├── LDAP 匿名查询
+   └── whatweb                │   ├── nmap hostname 字段
+                              │   └── 都失败 → 提示手动输入
+   SMB（有才跑）              ├── 【无凭据】
+   ├── enum4linux             │   ├── ldapsearch 匿名
+   └── smbclient              │   ├── kerbrute 用户枚举
+                              │   ├── GetNPUsers AS-REP Roasting
+   FTP（有才跑）              │   ├── crackmapexec SMB
+   └── 匿名登录检测           │   └── rpcclient 匿名
+                              └── 【有凭据：-u/-p 传入后】
+   SSH（有才跑）                  ├── ldapsearch 认证枚举
+   └── ssh-audit                  ├── crackmapexec 认证枚举
+                                  └── GetUserSPNs Kerberoasting
+        ↓
+④ 只保存有输出的文件，空结果不创建
+        ↓
+⑤ 生成 report.md（只包含有内容的模块）
+```
+
+---
+
+### 输出结构（按实际结果动态生成）
+
+```
+results/10.10.10.1/
+├── scan/
+│   ├── rustscan.txt
+│   └── nmap.xml
+├── web/              ← 只有扫到 HTTP/HTTPS 才有此目录
+│   ├── gobuster_80.txt
+│   ├── nikto_80.txt
+│   └── whatweb_80.txt
+├── smb/              ← 只有扫到 SMB 才有
+├── ftp/              ← 只有扫到 FTP 才有
+├── ssh/              ← 只有扫到 SSH 才有
+├── ad/               ← 只有检测到 AD 才有
+└── report.md         ← 只汇总有内容的模块
+```
+
+---
+
+### 终端进度显示
+
+```
+[*] rustscan 扫描中...
+[+] 发现 5 个开放端口: 22, 80, 443, 139, 445
+
+[*] nmap 深度探测中...
+[+] 识别到: SSH(22)  HTTP(80)  HTTPS(443)  SMB(139,445)
+
+[*] 启动枚举模块（共 7 个任务）
+
+  gobuster:80    [=================>    ] 运行中  (1m12s)
+  gobuster:443   [=========>            ] 运行中  (42s)
+  nikto:80       [====================] 完成     (58s)
+  whatweb:80     [====================] 完成     (3s)
+  whatweb:443    [====================] 完成     (4s)
+  enum4linux     [===========>          ] 运行中  (23s)
+  ssh-audit      [====================] 完成     (8s)
+
+[+] 全部完成，报告已生成: results/10.10.10.1/report.md
+```
+
+---
+
+### 关键默认值
+
+| 项目 | 值 |
+|------|-----|
+| 目录字典 | `/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt` |
+| kerbrute 用户名字典 | `/usr/share/seclists/Usernames/xato-net-10-million-usernames.txt` |
+| gobuster 超时 | 10 分钟 |
+| 其余工具超时 | 5 分钟 |
+| 域名提取顺序 | LDAP 匿名 → nmap hostname → 手动输入 |
+| 输出路径 | `results/<ip>/` |
+
+---
+
+### 明确不做
+- ❌ 无输出不创建文件/目录
+- ❌ searchsploit
+- ❌ hydra 爆破
+- ❌ 多目标批量
+- ❌ 交互式菜单
+
+---
